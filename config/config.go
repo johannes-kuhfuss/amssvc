@@ -28,6 +28,7 @@ var (
 	SubscriptionId  string
 	ArmAadAudience  string
 	ArmEndpoint     string
+	SasToken        string
 )
 
 func InitConfig(file string) error {
@@ -80,6 +81,10 @@ func configMediaServices() error {
 	ArmEndpoint, ok = os.LookupEnv("ARMENDPOINT")
 	if !ok || ArmEndpoint == "" {
 		return errors.New("no ArmEndpoint set")
+	}
+	SasToken, ok = os.LookupEnv("SASTOKEN")
+	if !ok || SasToken == "" {
+		return errors.New("no SasToken set")
 	}
 	return nil
 }

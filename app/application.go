@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -21,10 +22,12 @@ import (
 )
 
 var (
-	router     *gin.Engine
-	jobHandler handler.JobHandlers
-	jobService service.JobService
-	authToken  string
+	router        *gin.Engine
+	jobHandler    handler.JobHandlers
+	jobService    service.JobService
+	authToken     string
+	transformName string = "jkuencodeproxy"
+	apiVersion    string = "2020-05-01"
 )
 
 func initRouter() {
@@ -75,45 +78,103 @@ func startProcessing() {
 }
 
 func processItems() {
-	transformName := "jkuencodeproxy"
-	apiVersion := "2020-05-01"
+
 	for !config.Shutdown {
 		job, err := jobService.GetNextJob()
 		if err != nil {
 			logger.Debug(err.Message())
 			time.Sleep(time.Second * time.Duration(config.NoJobWaitTime))
 		} else {
-			postUrl := fmt.Sprintf("%v/subscriptions/%v/resourceGroups/%v/providers/Microsoft.Media/mediaServices/%v/transforms/%v/jobs/%v?api-version=%v",
-				config.ArmEndpoint, config.SubscriptionId, config.ResourceGroup, config.AccountName, transformName, job.Id, apiVersion)
-			_ = postUrl
-			url, _ := url.Parse(job.SrcUrl)
-			pathName := strings.TrimLeft(filepath.Dir(url.Path), string(os.PathSeparator))
-			baseUrl := url.Scheme + "://" + url.Host + "/" + pathName + "/"
-			fileName := filepath.Base(job.SrcUrl)
-			files := make([]string, 1)
-			files = append(files, fileName)
-
-			outputs := make([]dto.Outputs, 1)
-			output := dto.Outputs{
-				OdataType: "#Microsoft.Media.JobOutputAsset",
-				AssetName: fmt.Sprintf("%v_proxy", fileName),
+			createDestAsset(job)
+			createProxy(job)
+			newStatus := dto.JobStatusUpdateRequest{
+				Status: "finished",
+				ErrMsg: "",
 			}
-			outputs = append(outputs, output)
-			amsJobReq := dto.AmsJobReq{
-				Properties: dto.Properties{
-					Input: dto.Input{
-						OdataType: "#Microsoft.Media.JobInputHttp",
-						BaseURI:   baseUrl,
-						Files:     files,
-					},
-					Outputs:  outputs,
-					Priority: "Normal",
-				},
-			}
-			fmt.Printf("Request %v\n", amsJobReq)
-			time.Sleep(time.Second * time.Duration(config.NoJobWaitTime))
+			jobService.SetStatus(job.Id, newStatus)
 		}
 	}
+}
+
+func createDestAsset(job *dto.JobResponse) {
+	bearer := "Bearer " + authToken
+	putUrl := createAssetRequestUrl(job.SrcUrl)
+	assetReq := dto.AssetReq{}
+	reqJson, _ := json.Marshal(assetReq)
+	client := &http.Client{}
+	req, err := http.NewRequest(http.MethodPut, putUrl, bytes.NewBuffer(reqJson))
+	if err != nil {
+		logger.Error("error creating asset", err)
+	}
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	req.Header.Add("Authorization", bearer)
+	_, err = client.Do(req)
+	if err != nil {
+		logger.Error("error creating asset", err)
+	}
+	logger.Info(fmt.Sprintf("Created new asset for %v", job.SrcUrl))
+}
+
+func createAssetRequestUrl(srcUrl string) string {
+	fileName := filepath.Base(srcUrl)
+	fileNameNoExt := strings.TrimSuffix(fileName, filepath.Ext(fileName))
+	assetName := fileNameNoExt + "_proxy"
+	return fmt.Sprintf("%v/subscriptions/%v/resourceGroups/%v/providers/Microsoft.Media/mediaServices/%v/assets/%v?api-version=%v",
+		config.ArmEndpoint, config.SubscriptionId, config.ResourceGroup, config.AccountName, assetName, apiVersion)
+}
+
+func createProxy(job *dto.JobResponse) {
+	bearer := "Bearer " + authToken
+	putUrl := createJobRequestUrl(job.Id)
+	amsJobReq := createAmsJobRequest(job.SrcUrl)
+	reqJson, _ := json.Marshal(amsJobReq)
+	client := &http.Client{}
+	req, err := http.NewRequest(http.MethodPut, putUrl, bytes.NewBuffer(reqJson))
+	if err != nil {
+		logger.Error("error creating proxy", err)
+	}
+	req.Header.Set("Content-Type", "application/json; charset=utf-8")
+	req.Header.Add("Authorization", bearer)
+	_, err = client.Do(req)
+	if err != nil {
+		logger.Error("error creating proxy", err)
+	}
+	logger.Info(fmt.Sprintf("Created new proxy for %v", job.SrcUrl))
+}
+
+func createAmsJobRequest(srcUrl string) dto.AmsJobReq {
+	var files []string
+	var outputs []dto.Outputs
+	url, _ := url.Parse(srcUrl)
+	pathName := strings.TrimLeft(filepath.Dir(url.Path), string(os.PathSeparator))
+	baseUrl := url.Scheme + "://" + url.Host + "/" + pathName + "/" + config.SasToken
+	fileName := filepath.Base(srcUrl)
+	fileNameNoExt := strings.TrimSuffix(fileName, filepath.Ext(fileName))
+	files = append(files, fileName)
+
+	output := dto.Outputs{
+		OdataType: "#Microsoft.Media.JobOutputAsset",
+		AssetName: fmt.Sprintf("%v_proxy", fileNameNoExt),
+	}
+	outputs = append(outputs, output)
+
+	amsJobReq := dto.AmsJobReq{
+		Properties: dto.Properties{
+			Input: dto.Input{
+				OdataType: "#Microsoft.Media.JobInputHttp",
+				BaseURI:   baseUrl,
+				Files:     files,
+			},
+			Outputs:  outputs,
+			Priority: "Normal",
+		},
+	}
+	return amsJobReq
+}
+
+func createJobRequestUrl(jobId string) string {
+	return fmt.Sprintf("%v/subscriptions/%v/resourceGroups/%v/providers/Microsoft.Media/mediaServices/%v/transforms/%v/jobs/%v?api-version=%v",
+		config.ArmEndpoint, config.SubscriptionId, config.ResourceGroup, config.AccountName, transformName, jobId, apiVersion)
 }
 
 func getAzureAuthToken() (string, api_error.ApiErr) {
