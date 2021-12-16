@@ -74,19 +74,20 @@ func startProcessing() {
 }
 
 func renewAzureAuthToken() {
-	token, err := getAzureAuthToken()
-	if err != nil {
-		logger.Error("", err)
-		time.Sleep(time.Second * 30)
-	} else {
-		authToken = token
-		logger.Info("set new auth token")
-		time.Sleep(time.Second * 3500)
+	for !config.Shutdown {
+		token, err := getAzureAuthToken()
+		if err != nil {
+			logger.Error("", err)
+			time.Sleep(time.Second * 30)
+		} else {
+			authToken = token
+			logger.Info("set new auth token")
+			time.Sleep(time.Second * 3500)
+		}
 	}
 }
 
 func processItems() {
-
 	for !config.Shutdown {
 		job, err := jobService.GetNextJob()
 		if err != nil {
