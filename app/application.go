@@ -69,12 +69,20 @@ func StartApp() {
 }
 
 func startProcessing() {
+	go renewAzureAuthToken()
+	go processItems()
+}
+
+func renewAzureAuthToken() {
 	token, err := getAzureAuthToken()
 	if err != nil {
-		panic(err)
+		logger.Error("", err)
+		time.Sleep(time.Second * 30)
+	} else {
+		authToken = token
+		logger.Info("set new auth token")
+		time.Sleep(time.Second * 3500)
 	}
-	authToken = token
-	go processItems()
 }
 
 func processItems() {
